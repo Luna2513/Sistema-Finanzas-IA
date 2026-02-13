@@ -26,6 +26,7 @@ class DashboardController {
         // 2. Setup UI
         this.setupUserInfo();
         this.setupNavigation();
+        this.populateCategorySelects(); // New
         this.setupEventListeners();
 
         // 3. Render View based on Role
@@ -99,6 +100,38 @@ class DashboardController {
         }
     }
 
+    populateCategorySelects() {
+        const selects = ['transactionCategorySelect', 'filterCategory'];
+        const categories = this.user.categories || [];
+
+        selects.forEach(id => {
+            const select = document.getElementById(id);
+            if (!select) return;
+
+            // Save selection or specific default
+            const currentVal = select.value;
+
+            // Clear (keep "All" for filter)
+            if (id === 'filterCategory') {
+                select.innerHTML = '<option value="all">Todas</option>';
+            } else {
+                select.innerHTML = '';
+            }
+
+            categories.forEach(cat => {
+                const option = document.createElement('option');
+                option.value = cat;
+                option.textContent = cat;
+                select.appendChild(option);
+            });
+
+            // Restore selection if possible
+            if (currentVal && categories.includes(currentVal)) {
+                select.value = currentVal;
+            }
+        });
+    }
+
     setupEventListeners() {
         // Logout
         document.getElementById('logoutBtn').addEventListener('click', () => {
@@ -107,7 +140,8 @@ class DashboardController {
 
         // Modals
         this.setupModal('transactionModal', 'addTransactionBtn', 'closeModalBtn');
-        this.setupModal('budgetModal', 'setBudgetBtn', 'closeBudgetModalBtn'); // Assuming you add a budget button later or reuse logic
+        this.setupModal('budgetModal', 'setBudgetBtn', 'closeBudgetModalBtn');
+        this.setupModal('categoryModal', 'openNewCategoryModalBtn', 'closeCategoryModalBtn');
 
         // Budget Button trigger (Manual binding since ID might be dynamic or hidden)
         const checkBudgetBtn = document.getElementById('setBudgetBtn');
@@ -121,6 +155,22 @@ class DashboardController {
         // Forms
         document.getElementById('transactionForm').addEventListener('submit', (e) => this.handleTransactionSubmit(e));
         document.getElementById('budgetForm').addEventListener('submit', (e) => this.handleBudgetSubmit(e));
+        document.getElementById('categoryForm').addEventListener('submit', (e) => this.handleCategorySubmit(e));
+
+        // Filters
+        document.getElementById('applyFiltersBtn')?.addEventListener('click', () => this.loadUserDashboard());
+        document.getElementById('clearFiltersBtn')?.addEventListener('click', () => {
+            document.getElementById('filterStartDate').value = '';
+            document.getElementById('filterEndDate').value = '';
+            document.getElementById('filterCategory').value = 'all';
+            this.loadUserDashboard();
+        });
+
+        // Admin Reports
+        const reportBtn = document.getElementById('generateReportBtn');
+        if (reportBtn) {
+            reportBtn.addEventListener('click', () => this.generateAdminReport());
+        }
     }
 
     setupModal(modalId, openBtnId, closeBtnId) {
@@ -154,7 +204,9 @@ class DashboardController {
         // Refresh User Data (in case it changed elsewhere) (simulated since it's same session)
         const balance = this.user.getBalance();
 
-        // Calculate Totals
+        // Calculate Totals (Always based on ALL transactions for the top cards, usually)
+        // Or should cards match filters? Usually top cards are global status.
+        // Let's keep cards global, table filtered.
         const income = this.user.transactions
             .filter(t => t.type === 'income')
             .reduce((acc, t) => acc + t.amount, 0);
@@ -171,7 +223,7 @@ class DashboardController {
         // Update Budget UI
         this.updateBudgetUI(expense);
 
-        // Render Table
+        // Render Table (Filtered)
         this.renderTransactionTable();
     }
 
@@ -179,7 +231,6 @@ class DashboardController {
         const el = document.getElementById(elementId);
         if (!el) return;
         el.textContent = `$${value.toFixed(2)}`;
-        // Simple animation could be added here
     }
 
     updateBudgetUI(totalExpense) {
@@ -226,11 +277,31 @@ class DashboardController {
 
         tbody.innerHTML = '';
 
+        // Filter Logic
+        let transactions = [...this.user.transactions];
+
+        const filterStart = document.getElementById('filterStartDate')?.value;
+        const filterEnd = document.getElementById('filterEndDate')?.value;
+        const filterCat = document.getElementById('filterCategory')?.value;
+
+        if (filterStart) {
+            const startDate = new Date(filterStart);
+            transactions = transactions.filter(t => new Date(t.date) >= startDate);
+        }
+        if (filterEnd) {
+            const endDate = new Date(filterEnd);
+            // Include the end date fully
+            transactions = transactions.filter(t => new Date(t.date) <= endDate);
+        }
+        if (filterCat && filterCat !== 'all') {
+            transactions = transactions.filter(t => t.category === filterCat);
+        }
+
         // Sort by date desc
-        const sortedTransactions = [...this.user.transactions].sort((a, b) => new Date(b.date) - new Date(a.date));
+        const sortedTransactions = transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
 
         if (sortedTransactions.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="px-6 py-4 text-center text-gray-400">No hay transacciones recientes.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" class="px-6 py-4 text-center text-gray-400">No hay transacciones que coincidan.</td></tr>';
             return;
         }
 
@@ -249,7 +320,7 @@ class DashboardController {
                         ${t.category}
                     </span>
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${new Date(t.date).toLocaleDateString()}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${new Date(t.date + 'T12:00:00').toLocaleDateString()}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-right ${colorClass}">
                     ${sign}$${t.amount.toFixed(2)}
                 </td>
@@ -292,6 +363,26 @@ class DashboardController {
 
             document.getElementById('budgetModal').classList.add('hidden');
             this.loadUserDashboard();
+        }
+    }
+
+    handleCategorySubmit(e) {
+        e.preventDefault();
+        const input = document.getElementById('categoryInput');
+        const categoryName = input.value.trim();
+
+        if (categoryName) {
+            this.user.addCategory(categoryName);
+            auth.updateUser(this.user);
+
+            this.populateCategorySelects(); // Update UI dropdowns
+
+            // Auto Select new category in transaction form
+            const select = document.getElementById('transactionCategorySelect');
+            select.value = categoryName;
+
+            document.getElementById('categoryModal').classList.add('hidden');
+            input.value = '';
         }
     }
 
@@ -363,6 +454,49 @@ class DashboardController {
 
         const adminBudgetAlerts = document.getElementById('adminBudgetAlerts');
         if (adminBudgetAlerts) adminBudgetAlerts.textContent = budgetAlertsCount;
+    }
+
+    generateAdminReport() {
+        if (!auth.isAdmin()) return;
+
+        const allUsersData = storage.get(auth.usersKey) || [];
+        const csvRows = [];
+
+        // Header
+        csvRows.push(['Usuario', 'Email', 'Rol', 'Balance Total', 'Transacciones Totales', 'Gastos Totales', 'Presupuesto', 'Estado']);
+
+        allUsersData.forEach(userData => {
+            const u = User.fromData(userData);
+            const balance = u.getBalance();
+            const expense = u.transactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+
+            let status = 'OK';
+            if (u.budget > 0 && expense > u.budget) status = 'SOBREPRESUPUESTO';
+
+            csvRows.push([
+                u.name,
+                u.email,
+                u.role,
+                balance.toFixed(2),
+                u.transactions.length,
+                expense.toFixed(2),
+                u.budget.toFixed(2),
+                status
+            ].join(','));
+        });
+
+        const csvString = csvRows.join('\n');
+
+        // Create Blob and Download
+        const blob = new Blob([csvString], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.setAttribute('hidden', '');
+        a.setAttribute('href', url);
+        a.setAttribute('download', 'reporte_general_financiero.csv');
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     }
 }
 
